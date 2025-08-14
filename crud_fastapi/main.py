@@ -1,6 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-import json
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 
 app = FastAPI()
 
@@ -10,57 +12,64 @@ class Item(BaseModel):
     name: str
     description: str
 
-# In-memory database (local file storage)
-DB_FILE = "database.json"
+# SQLAlchemy setup for real database
+SQLALCHEMY_DATABASE_URL = "sqlite:///./real.db"
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-def read_database():
+class ItemModel(Base):
+    __tablename__ = "items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    description = Column(String, index=True)
+
+Base.metadata.create_all(bind=engine)
+
+# Dependency for database session
+def get_db():
+    db = SessionLocal()
     try:
-        with open(DB_FILE, "r") as file:
-            return json.load(file)
-    except FileNotFoundError:
-        return []
-
-def write_database(data):
-    with open(DB_FILE, "w") as file:
-        json.dump(data, file)
+        yield db
+    finally:
+        db.close()
 
 @app.get("/items")
-def get_items():
-    return read_database()
+def get_items(db: Session = Depends(get_db)):
+    return db.query(ItemModel).all()
 
 @app.get("/items/{item_id}")
-def get_item(item_id: int):
-    items = read_database()
-    for item in items:
-        if item["id"] == item_id:
-            return item
-    raise HTTPException(status_code=404, detail="Item not found")
-
-@app.post("/items")
-def create_item(item: Item):
-    items = read_database()
-    if any(existing_item["id"] == item.id for existing_item in items):
-        raise HTTPException(status_code=400, detail="Item with this ID already exists")
-    items.append(item.model_dump())
-    write_database(items)
+def get_item(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(ItemModel).filter(ItemModel.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
     return item
 
+@app.post("/items")
+def create_item(item: Item, db: Session = Depends(get_db)):
+    db_item = ItemModel(**item.dict())
+    db.add(db_item)
+    db.commit()
+    db.refresh(db_item)
+    return db_item
+
 @app.put("/items/{item_id}")
-def update_item(item_id: int, updated_item: Item):
-    items = read_database()
-    for index, item in enumerate(items):
-        if item["id"] == item_id:
-            items[index] = updated_item.model_dump()
-            write_database(items)
-            return updated_item
-    raise HTTPException(status_code=404, detail="Item not found")
+def update_item(item_id: int, updated_item: Item, db: Session = Depends(get_db)):
+    db_item = db.query(ItemModel).filter(ItemModel.id == item_id).first()
+    if not db_item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    db_item.name = updated_item.name
+    db_item.description = updated_item.description
+    db.commit()
+    db.refresh(db_item)
+    return db_item
 
 @app.delete("/items/{item_id}")
-def delete_item(item_id: int):
-    items = read_database()
-    for index, item in enumerate(items):
-        if item["id"] == item_id:
-            deleted_item = items.pop(index)
-            write_database(items)
-            return deleted_item
-    raise HTTPException(status_code=404, detail="Item not found")
+def delete_item(item_id: int, db: Session = Depends(get_db)):
+    db_item = db.query(ItemModel).filter(ItemModel.id == item_id).first()
+    if not db_item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    db.delete(db_item)
+    db.commit()
+    return db_item

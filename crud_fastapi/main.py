@@ -1,14 +1,13 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 app = FastAPI()
 
 # Define the data model
 class Item(BaseModel):
-    id: int
+    id: int | None = None  # Optional id, can be specified by client
     name: str
     description: str
 
@@ -21,7 +20,7 @@ Base = declarative_base()
 class ItemModel(Base):
     __tablename__ = "items"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True)  # Auto-increment by default
     name = Column(String, index=True)
     description = Column(String, index=True)
 
@@ -48,7 +47,14 @@ def get_item(item_id: int, db: Session = Depends(get_db)):
 
 @app.post("/items")
 def create_item(item: Item, db: Session = Depends(get_db)):
-    db_item = ItemModel(**item.dict())
+    # Check if id is provided and validate uniqueness
+    if item.id is not None:
+        existing_item = db.query(ItemModel).filter(ItemModel.id == item.id).first()
+        if existing_item:
+            raise HTTPException(status_code=400, detail=f"Item with id {item.id} already exists")
+        db_item = ItemModel(id=item.id, name=item.name, description=item.description)
+    else:
+        db_item = ItemModel(name=item.name, description=item.description)  # Auto-increment id
     db.add(db_item)
     db.commit()
     db.refresh(db_item)
@@ -72,4 +78,4 @@ def delete_item(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Item not found")
     db.delete(db_item)
     db.commit()
-    return db_item
+    return {"message": "Item deleted successfully"}

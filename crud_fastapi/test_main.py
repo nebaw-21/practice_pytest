@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
+import pytest
 from main import app, get_db, Base, ItemModel
 
 # Use SQLite test database
@@ -28,29 +29,60 @@ app.dependency_overrides[get_db] = override_get_db
 # Create the test client
 client = TestClient(app)
 
+# Fixture to reset database before each test
+@pytest.fixture(autouse=True)
+def reset_db():
+    Base.metadata.drop_all(bind=test_engine)
+    Base.metadata.create_all(bind=test_engine)
+    yield
+
 # Test cases
 def test_create_item():
-    new_item = {"id": 1, "name": "Test Item", "description": "This is a test item."}
+    # Test creating without specifying id (auto-increment)
+    new_item = {"name": "Test Item", "description": "This is a test item."}
     response = client.post("/items", json=new_item)
     assert response.status_code == 200
-    assert response.json() == new_item
+    data = response.json()
+    assert data["name"] == new_item["name"]
+    assert data["description"] == new_item["description"]
+    assert "id" in data
+    auto_id = data["id"]
+
+
+
+    # Test creating with duplicate id should fail
+    duplicate_item = {"id": 2, "name": "Duplicate Item", "description": "This should fail."}
+    response = client.post("/items", json=duplicate_item)
+    assert response.status_code == 400
+    assert "already exists" in response.json()["detail"]
 
 def test_get_items():
+    client.post("/items", json={"name": "Test Item", "description": "Test desc"})
     response = client.get("/items")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+    assert len(response.json()) > 0
 
 def test_get_item():
-    response = client.get("/items/1")
+    create_response = client.post("/items", json={"name": "Test Item", "description": "Test desc"})
+    item_id = create_response.json()["id"]
+    response = client.get(f"/items/{item_id}")
     assert response.status_code == 200
-    assert response.json()["id"] == 1
+    assert response.json()["id"] == item_id
 
 def test_update_item():
-    updated_item = {"id": 1, "name": "Updated Item", "description": "Updated description."}
-    response = client.put("/items/1", json=updated_item)
+    create_response = client.post("/items", json={"name": "Old Item", "description": "Old desc"})
+    item_id = create_response.json()["id"]
+    updated_item = {"name": "Updated Item", "description": "Updated description"}
+    response = client.put(f"/items/{item_id}", json=updated_item)
     assert response.status_code == 200
-    assert response.json() == updated_item
+    assert response.json() == {**updated_item, "id": item_id}
 
-# Comment out or remove teardown to keep test.db intact
-# def teardown_module():
-#     Base.metadata.drop_all(bind=test_engine)
+def test_delete_item():
+    create_response = client.post("/items", json={"name": "Test Item", "description": "Test desc"})
+    item_id = create_response.json()["id"]
+    response = client.delete(f"/items/{item_id}")
+    assert response.status_code == 200
+    assert response.json() == {"message": "Item deleted successfully"}
+    get_response = client.get(f"/items/{item_id}")
+    assert get_response.status_code == 404
